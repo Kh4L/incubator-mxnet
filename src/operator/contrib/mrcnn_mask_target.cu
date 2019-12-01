@@ -74,8 +74,8 @@ __global__ void crop_and_scale_cuda_kernel(double *dense_poly_data, const int *p
     DType *roi = roi_data + (roi_idx * 4);
     DType w = roi[2] - roi[0];
     DType h = roi[3] - roi[1];
-  	w = fmaxf(w, 1.0f);
-  	h = fmaxf(h, 1.0f);
+      w = fmaxf(w, 1.0f);
+      h = fmaxf(h, 1.0f);
     DType ratio_h = ((DType) mask_size) / h;
     DType ratio_w = ((DType) mask_size) / w;
 
@@ -727,62 +727,6 @@ __global__ void merge_masks_cuda_kernel(unsigned char *masks_in, DType *masks_ou
     }
 }
 
-
-template <typename T>
-__device__ T bilinear_interpolate(
-    const T* in_data,
-    const int height,
-    const int width,
-    T y,
-    T x,
-    const int index /* index for debug only*/) {
-  // deal with cases that inverse elements are out of feature map boundary
-  if (y < -1.0 || y > height || x < -1.0 || x > width) {
-    // empty
-    return 0;
-  }
-
-  if (y <= 0) {
-    y = 0;
-  }
-  if (x <= 0) {
-    x = 0;
-  }
-
-  int y_low = static_cast<int>(y);
-  int x_low = static_cast<int>(x);
-  int y_high;
-  int x_high;
-
-  if (y_low >= height - 1) {
-    y_high = y_low = height - 1;
-    y = (T)y_low;
-  } else {
-    y_high = y_low + 1;
-  }
-
-  if (x_low >= width - 1) {
-    x_high = x_low = width - 1;
-    x = (T)x_low;
-  } else {
-    x_high = x_low + 1;
-  }
-
-  T ly = y - y_low;
-  T lx = x - x_low;
-  T hy = 1. - ly, hx = 1. - lx;
-  // do bilinear interpolation
-  T v1 = in_data[y_low * width + x_low];
-  T v2 = in_data[y_low * width + x_high];
-  T v3 = in_data[y_high * width + x_low];
-  T v4 = in_data[y_high * width + x_high];
-  T w1 = hy * hx, w2 = hy * lx, w3 = ly * hx, w4 = ly * lx;
-
-  T val = (w1 * v1 + w2 * v2 + w3 * v3 + w4 * v4);
-
-  return val;
-}
-
 template<typename DType>
 __global__ void MRCNNMaskTargetKernel(const DType *rois,
                                       const DType *matches,
@@ -866,7 +810,7 @@ __global__ void rasterize_kernel(const double* dense_coordinates,
                                  unsigned char* mask) {
   const int poly_id = blockIdx.x;
   const int tid = threadIdx.x;
-  long k = (poly_rel_idx[poly_id + 1] - poly_rel_idx[poly_id]) / 2;
+  int k = (poly_rel_idx[poly_id + 1] - poly_rel_idx[poly_id]) / 2;
   __shared__ double2 vertices[NEDGES];
   typedef cub::BlockRadixSort<double, NTHREADS, 1> cub_sort;
   constexpr int NWARPS = NTHREADS / THREADS_PER_WARP;
@@ -877,7 +821,7 @@ __global__ void rasterize_kernel(const double* dense_coordinates,
 
   double temp_intersections[NWARPS];
 
-  assert(k < NEDGES);
+  // assert(k < NEDGES);
 
   /*if (threadIdx.x == 0) {*/
     /*printf("%d k: %d %d %d\n", blockIdx.x, (int)k, poly_rel_idx[poly_id], poly_rel_idx[poly_id + 1]);*/
@@ -887,94 +831,114 @@ __global__ void rasterize_kernel(const double* dense_coordinates,
 
   unsigned char* const mask_ptr = mask + poly_id * h * w;
 
-  for (int i = tid; i < k; i += blockDim.x) {
-    vertices[i] = xy[i];
-  }
-  __syncthreads();
-
-  /*if (blockIdx.x == 0 && threadIdx.x == 0) {*/
-    /*printf("[\n");*/
-    /*for (int i = 0; i < k; ++i) {*/
-      /*printf("[%f, %f],\n", vertices[i].x, vertices[i].y);*/
-    /*}*/
-    /*printf("]\n");*/
-  /*}*/
-
   const int warp_id = tid / THREADS_PER_WARP;
   const int lane_id = tid % THREADS_PER_WARP;
   const double invalid_intersection = 2 * w;
   const long aligned_h = ((h + NWARPS - 1) / NWARPS) * NWARPS;
+
   for (int current_y = warp_id;
-       current_y < aligned_h;
-       current_y += NWARPS) {
-    double my_y = current_y + 0.5;
-    for (int edge = lane_id; edge < NEDGES; edge += THREADS_PER_WARP) {
-      scratch.intersections[warp_id * NEDGES + edge] = invalid_intersection;
-    }
-    __syncthreads();
+    current_y < h;
+    current_y += NWARPS) {
     if (current_y < h) {
-      for (int edge = lane_id; edge < k; edge += THREADS_PER_WARP) {
-        const int previous_edge = (edge - 1 + k) % k;
-        const double2 vert1 = vertices[previous_edge];
-        const double2 vert2 = vertices[edge];
-        if (vert1.y != vert2.y) {
-          double my_intersection = (my_y * (vert1.x - vert2.x) +
-                                    vert2.x * vert1.y -
-                                    vert1.x * vert2.y) /
-                                   (vert1.y - vert2.y);
-          if (my_intersection <= fmax(vert1.x, vert2.x) &&
-              my_intersection >= fmin(vert1.x, vert2.x)) {
-            scratch.intersections[warp_id * NEDGES + edge] = my_intersection;
+      for (int x = lane_id; x < w; x += THREADS_PER_WARP) {
+        mask_ptr[x + current_y * h] = 0;
+      }
+    }
+  }
+  __syncthreads();
+
+  int current_k = 0;
+
+  for (int current_k_offset = 0; current_k_offset < k; current_k_offset += NEDGES) {
+    current_k = min((k - current_k_offset), (int)NEDGES);
+
+    if (tid < current_k) {
+      int v_idx = current_k_offset + tid;
+      vertices[tid] = xy[v_idx];
+    }
+
+    __syncthreads();
+
+    /*if (blockIdx.x == 0 && threadIdx.x == 0) {*/
+      /*printf("[\n");*/
+      /*for (int i = 0; i < k; ++i) {*/
+        /*printf("[%f, %f],\n", vertices[i].x, vertices[i].y);*/
+      /*}*/
+      /*printf("]\n");*/
+    /*}*/
+
+    for (int current_y = warp_id;
+        current_y < aligned_h;
+        current_y += NWARPS) {
+      double my_y = current_y + 0.5;
+      for (int edge = lane_id; edge < NEDGES; edge += THREADS_PER_WARP) {
+        scratch.intersections[warp_id * NEDGES + edge] = invalid_intersection;
+      }
+      __syncthreads();
+      if (current_y < h) {
+        for (int edge = lane_id; edge < current_k; edge += THREADS_PER_WARP) {
+          const int previous_edge = (edge - 1 + current_k) % current_k;
+          const double2 vert1 = vertices[previous_edge];
+          const double2 vert2 = vertices[edge];
+          if (vert1.y != vert2.y) {
+            double my_intersection = (my_y * (vert1.x - vert2.x) +
+                                      vert2.x * vert1.y -
+                                      vert1.x * vert2.y) /
+                                    (vert1.y - vert2.y);
+            if (my_intersection <= fmax(vert1.x, vert2.x) &&
+                my_intersection >= fmin(vert1.x, vert2.x)) {
+              scratch.intersections[warp_id * NEDGES + edge] = my_intersection;
+            }
           }
         }
       }
-    }
 
-    __syncthreads();
-
-#pragma unroll
-    for (int i = 0; i < NWARPS; ++i) {
-      temp_intersections[i] = scratch.intersections[i * NEDGES + tid];
-    }
-
-    __syncthreads();
+      __syncthreads();
 
 #pragma unroll
-    for (int i = 0; i < NWARPS; ++i) {
-      double temp[1] = { temp_intersections[i] };
-      cub_sort(scratch.temp_storage).Sort(temp);
-      temp_intersections[i] = temp[0];
-    }
-
-    __syncthreads();
-
-#pragma unroll
-    for (int i = 0; i < NWARPS; ++i) {
-      scratch.intersections[i * NEDGES + tid] = temp_intersections[i];
-    }
-
-    __syncthreads();
-    /*if (current_y == 1 && lane_id == 0 && blockIdx.x == 0) {*/
-      /*printf("Intersections:\n");*/
-      /*for (int i = 0; i < k; ++i) {*/
-        /*printf("%d: %f\n", i, scratch.intersections[i]);*/
-      /*}*/
-      /*printf("End intersections\n");*/
-    /*}*/
-
-    if (current_y < h) {
-      for (int x = lane_id; x < w; x += THREADS_PER_WARP) {
-        const double my_x = x + 0.5;
-        const int place = binary_search(my_x, scratch.intersections + NEDGES * warp_id, NEDGES);
-        /*if (blockIdx.x == 0 && current_y == 1) {*/
-          /*printf("%d: %f My binary search result is %d and I write %d to %d\n", x, my_x, place, place % 2, (int)(x + current_y * w));*/
-        /*}*/
-        mask_ptr[x + current_y * w] = place % 2;
+      for (int i = 0; i < NWARPS; ++i) {
+        temp_intersections[i] = scratch.intersections[i * NEDGES + tid];
       }
-    }
 
+      __syncthreads();
+
+#pragma unroll
+      for (int i = 0; i < NWARPS; ++i) {
+        double temp[1] = { temp_intersections[i] };
+        cub_sort(scratch.temp_storage).Sort(temp);
+        temp_intersections[i] = temp[0];
+      }
+
+      __syncthreads();
+
+#pragma unroll
+      for (int i = 0; i < NWARPS; ++i) {
+        scratch.intersections[i * NEDGES + tid] = temp_intersections[i];
+      }
+
+      __syncthreads();
+      /*if (current_y == 1 && lane_id == 0 && blockIdx.x == 0) {*/
+        /*printf("Intersections:\n");*/
+        /*for (int i = 0; i < k; ++i) {*/
+          /*printf("%d: %f\n", i, scratch.intersections[i]);*/
+        /*}*/
+        /*printf("End intersections\n");*/
+      /*}*/
+
+      if (current_y < h) {
+        for (int x = lane_id; x < w; x += THREADS_PER_WARP) {
+          const double my_x = x + 0.5;
+          const int place = binary_search(my_x, scratch.intersections + NEDGES * warp_id, NEDGES);
+          /*if (blockIdx.x == 0 && current_y == 1) {*/
+            /*printf("%d: %f My binary search result is %d and I write %d to %d\n", x, my_x, place, place % 2, (int)(x + current_y * w));*/
+          /*}*/
+          mask_ptr[x + current_y * w] = (mask_ptr[x + current_y * w] + place) % 2;
+        }
+      }
+      __syncthreads();
+    }  //  for current_y
     __syncthreads();
-  }
+  }  // for k
 }
 
 
@@ -1040,11 +1004,21 @@ void MRCNNMaskTargetRun<gpu>(const MRCNNMaskTargetParam& param, const std::vecto
     std::cout << batch_size << std::endl;
     std::cout << dense_polys.shape_ << std::endl;
     cudaDeviceSynchronize();
+    // cudaEvent_t start, stop;
+    // cudaEventCreate(&start);
+    // cudaEventCreate(&stop);
+    // cudaEventRecord(start);
+    // rasterize_kernel<<<num_of_poly, NEDGES>>>(dense_polys.dptr_,
+    rasterize_kernel<<<num_of_poly, NEDGES, 0, stream>>>(dense_polys.dptr_,
+                                                         poly_rel_idx.dptr_,
+                                                         M, M,
+                                                         d_mask_t.dptr_);
 
-    rasterize_kernel<<<num_of_poly, 256, 0, stream>>>(dense_polys.dptr_,
-                                                      poly_rel_idx.dptr_,
-                                                      M, M,
-                                                      d_mask_t.dptr_);
+    // cudaEventRecord(stop);
+    // cudaEventSynchronize(stop);
+    // float ms = 0;
+    // cudaEventElapsedTime(&ms, start, stop);
+    // std::cout << "rasterize_kernel time: " <<  milliseconds << "ms" << std::endl;
     cudaDeviceSynchronize();
     std::cout << cudaGetErrorString(cudaGetLastError()) << std::endl;
     unsigned char* test = new unsigned char[28*28];
@@ -1053,9 +1027,9 @@ void MRCNNMaskTargetRun<gpu>(const MRCNNMaskTargetParam& param, const std::vecto
     for (int i = 0; i < 28; ++i) {
       for (int j = 0; j < 28; ++j) {
         if (test[i*28 + j] == 0) {
-          std::cout << " ";
+          std::cout << "  ";
         } else {
-          std::cout << "#";
+          std::cout << "##";
         }
       }
       std::cout << std::endl;
