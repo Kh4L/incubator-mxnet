@@ -880,7 +880,13 @@ __global__ void rasterize_kernel(const double* dense_coordinates,
           const int previous_edge = (edge - 1 + current_k) % current_k;
           const double2 vert1 = vertices[previous_edge];
           const double2 vert2 = vertices[edge];
-          if (vert1.y != vert2.y) {
+          if (vert1.x == vert2.x) {
+            double min_y = fmin(vert1.y, vert2.y);
+            double max_y = fmax(vert1.y, vert2.y);
+            if (my_y <= max_y && my_y >= min_y) {
+              scratch.intersections[warp_id * NEDGES + edge] = vert1.x;
+            }
+          } else if (vert1.y != vert2.y) {
             double my_intersection = (my_y * (vert1.x - vert2.x) +
                                       vert2.x * vert1.y -
                                       vert1.x * vert2.y) /
