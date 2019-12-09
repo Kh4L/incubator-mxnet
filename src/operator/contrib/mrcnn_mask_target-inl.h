@@ -38,8 +38,8 @@ namespace mxnet {
 namespace op {
 
 namespace mrcnn_index {
-  enum MRCNNMaskTargetOpInputs {kRoi, kDensePolys, kPolysPerInstance,
-                                kPolyRelIdx, kMatches, kClasses};
+  enum MRCNNMaskTargetOpInputs {kRoi, kMasksMeta, kMasksCoords,
+                                kMatches, kClasses};
   enum MRCNNMaskTargetOpOutputs {kMask, kMaskClasses};
   enum MRCNNMaskTargetOpResource {kTempSpace};
 }  // namespace mrcnn_index
@@ -66,8 +66,8 @@ inline bool MRCNNMaskTargetShape(const NodeAttrs& attrs,
   using namespace mshadow;
   const MRCNNMaskTargetParam& param = nnvm::get<MRCNNMaskTargetParam>(attrs.parsed);
 
-  CHECK_EQ(in_shape->size(), 6)
-    << "Input:[rois, dense_polys, polys_per_instance, poly_rel_idx, matches, cls_targets]";
+  CHECK_EQ(in_shape->size(), 5)
+    << "Input:[rois, masks_meta, masks_coords, matches, cls_targets]";
 
   // (B, N, 4)
   mxnet::TShape tshape = in_shape->at(mrcnn_index::kRoi);
@@ -77,18 +77,15 @@ inline bool MRCNNMaskTargetShape(const NodeAttrs& attrs,
   auto num_rois = tshape[1];
 
   // (num of coordinates, 2)
-  tshape = in_shape->at(mrcnn_index::kDensePolys);
-  CHECK_EQ(tshape.ndim(), 2) << "dense_polys should be a 2D tensor";
+  // tshape = in_shape->at(mrcnn_index::kMasksMeta);
+  // CHECK_EQ(tshape.ndim(), 2) << "masks_meta should be a 2D tensor";
 
-    // (num of rois/instances)
-  tshape = in_shape->at(mrcnn_index::kPolysPerInstance);
-  CHECK_EQ(tshape.ndim(), 1) << "polys_per_instance should be a 1D tensor";
-  CHECK_EQ(tshape[0], batch_size * num_rois + 1)
-    << " batch size should be the same for all the inputs.";
+  // (num of rois/instances)
+  // tshape = in_shape->at(mrcnn_index::kMasksCoords);
+  // CHECK_EQ(tshape.ndim(), 1) << "masks_coords should be a 2D tensor";
+  // CHECK_EQ(tshape[0], batch_size * num_rois + 1)
+  //   << " batch size should be the same for all the inputs.";
 
-  // (number of polygons)
-  tshape = in_shape->at(mrcnn_index::kPolyRelIdx);
-  CHECK_EQ(tshape.ndim(), 1) << "poly_rel_idx should be a 1D tensor";
 
   // (B, N)
   tshape = in_shape->at(mrcnn_index::kMatches);
@@ -112,7 +109,7 @@ inline bool MRCNNMaskTargetShape(const NodeAttrs& attrs,
 inline bool MRCNNMaskTargetType(const NodeAttrs& attrs,
                                 std::vector<int>* in_type,
                                 std::vector<int>* out_type) {
-  CHECK_EQ(in_type->size(), 6);
+  CHECK_EQ(in_type->size(), 5);
   int dtype = (*in_type)[0];
   CHECK_NE(dtype, -1) << "Input must have specified type";
 
