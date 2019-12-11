@@ -52,35 +52,28 @@ these are only a subset of rle kernels.*/
 
 typedef unsigned int uint;
 
-template<typename DType>
-__global__ void MRCNNMaskTargetKernel(const DType *rois,
-                                      const DType *matches,
-                                      const DType *cls_targets,
-                                      DType* sampled_masks,
-                                      DType* mask_cls,
-                                      const int total_out_el,
-                                      int batch_size,
-                                      int num_classes,
-                                      int num_rois,
-                                      int mask_size_h,
-                                      int mask_size_w,
-                                      int sample_ratio) {
+template <typename DType>
+__global__ void mask_class_encode(const DType *matches,
+                                  const DType *cls_targets,
+                                  DType* mask_cls,
+                                  int batch_size,
+                                  int num_classes,
+                                  int num_rois,
+                                  int mask_size_h,
+                                  int mask_size_w) {
+  const int mask_idx = blockIdx.x;
+  const int cls_idx = mask_idx % num_classes;
+  const int roi_idx = (mask_idx / num_classes) % num_rois;
+  const int batch_idx = (mask_idx / num_classes / num_rois);
 
-  // computing mask_cls
-  int num_masks = batch_size * num_rois * num_classes;
-  int mask_vol = mask_size_h * mask_size_w;
-  for (int mask_idx = blockIdx.x; mask_idx < num_masks; mask_idx += gridDim.x) {
-    int cls_idx = mask_idx % num_classes;
-    int roi_idx = (mask_idx / num_classes) % num_rois;
-    int batch_idx = (mask_idx / num_classes / num_rois);
+  const int mask_vol = mask_size_h * mask_size_w;
 
-    DType* mask_cls_out = mask_cls + mask_idx * mask_vol;
+  DType* mask_cls_out = mask_cls + mask_idx * mask_vol;
 
-    DType cls_target = cls_targets[batch_idx * num_rois + roi_idx];
-    DType out_val = (cls_target == cls_idx);
-    for (int mask_pixel = threadIdx.x; mask_pixel < mask_vol; mask_pixel += blockDim.x) {
-      mask_cls_out[mask_pixel] = out_val;
-    }
+  DType cls_target = cls_targets[batch_idx * num_rois + roi_idx];
+  DType out_val = (cls_target == cls_idx);
+  for (int mask_pixel = threadIdx.x; mask_pixel < mask_vol; mask_pixel += blockDim.x) {
+    mask_cls_out[mask_pixel] = out_val;
   }
 }
 
@@ -325,8 +318,6 @@ void MRCNNMaskTargetRun<gpu>(const MRCNNMaskTargetParam& param, const std::vecto
 
     int batch_size = rois.shape_[0];
 
-    int num_el = outputs[mrcnn_index::kMask].Size();
-
     // Mask Target generation
     int num_of_rois = rois.shape_[1];
 
@@ -378,21 +369,21 @@ void MRCNNMaskTargetRun<gpu>(const MRCNNMaskTargetParam& param, const std::vecto
     }
 
     // out: 2 * (B, N, C, MS, MS)
-    int total_num_of_masks = batch_size * num_of_rois * param.num_classes;
+    const int total_num_of_masks = batch_size * num_of_rois * param.num_classes;
     write_masks_to_output_kernel<<<total_num_of_masks, 256, 0, stream>>>(d_mask_t.dptr_,
                                                                          out_masks.dptr_, M,
                                                                          cls_targets.dptr_,
                                                                          param.num_classes);
 
-    dim3 dimGrid = dim3(CUDA_GET_BLOCKS(num_el));
-    dim3 dimBlock = dim3(block_dim_size);
 
-    MRCNNMaskTargetKernel<<<dimGrid, dimBlock, 0, stream>>>
-    (rois.dptr_, matches.dptr_, cls_targets.dptr_,
-    out_masks.dptr_, out_mask_cls.dptr_,
-    num_el, batch_size, param.num_classes, num_of_rois,
-    param.mask_size[0], param.mask_size[1], param.sample_ratio);
-    MSHADOW_CUDA_POST_KERNEL_CHECK(MRCNNMaskTargetKernel);
+    mask_class_encode<<<total_num_of_masks, 1024, 0, stream>>> (matches.dptr_, cls_targets.dptr_,
+                                                                out_mask_cls.dptr_,
+                                                                batch_size,
+                                                                param.num_classes,
+                                                                num_of_rois,
+                                                                param.mask_size[0],
+                                                                param.mask_size[1]);
+    MSHADOW_CUDA_POST_KERNEL_CHECK(mask_class_encode);
   });
 }
 
