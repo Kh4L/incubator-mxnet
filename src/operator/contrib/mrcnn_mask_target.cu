@@ -287,11 +287,7 @@ __global__ void write_masks_to_output_kernel(unsigned char *masks_in, DType *mas
   const int out_mask_offset = (roi_idx * num_classes + class_idx) * mask_size * mask_size;
 
   for(int j = tid; j < mask_size * mask_size; j += blockDim.x) {
-    if (class_idx == cls_targets[roi_idx]) {
-      masks_out[out_mask_offset + j] = (DType)masks_in[in_mask_offset + j];
-    } else {
-      masks_out[out_mask_offset + j] = (DType)0;
-    }
+    masks_out[out_mask_offset + j] = (DType)masks_in[in_mask_offset + j];
   }
 }
 
@@ -328,7 +324,6 @@ void MRCNNMaskTargetRun<gpu>(const MRCNNMaskTargetParam& param, const std::vecto
     std::cout << M << std::endl;
     std::cout << num_of_rois << std::endl;
     std::cout << batch_size << std::endl;
-    cudaDeviceSynchronize();
     // cudaEvent_t start, stop;
     // cudaEventCreate(&start);
     // cudaEventCreate(&stop);
