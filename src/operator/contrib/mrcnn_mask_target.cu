@@ -295,7 +295,6 @@ template<>
 void MRCNNMaskTargetRun<gpu>(const MRCNNMaskTargetParam& param, const std::vector<TBlob> &inputs,
                              const std::vector<TBlob> &outputs, const OpContext &ctx,
                              mshadow::Stream<gpu> *s) {
-  const int block_dim_size = kMaxThreadsPerBlock;
   using namespace mxnet_op;
   using mshadow::Tensor;
 
@@ -321,9 +320,6 @@ void MRCNNMaskTargetRun<gpu>(const MRCNNMaskTargetParam& param, const std::vecto
 
     auto stream = mshadow::Stream<gpu>::GetStream(s);
 
-    std::cout << M << std::endl;
-    std::cout << num_of_rois << std::endl;
-    std::cout << batch_size << std::endl;
     // cudaEvent_t start, stop;
     // cudaEventCreate(&start);
     // cudaEventCreate(&stop);
@@ -342,9 +338,7 @@ void MRCNNMaskTargetRun<gpu>(const MRCNNMaskTargetParam& param, const std::vecto
     // float ms = 0;
     // cudaEventElapsedTime(&ms, start, stop);
     // std::cout << "rasterize_kernel time: " <<  milliseconds << "ms" << std::endl;
-    cudaDeviceSynchronize();
-    std::cout << cudaGetErrorString(cudaGetLastError()) << std::endl;
-
+#if 0
     for (int mask_idx = 0; mask_idx < num_of_rois / 4; ++mask_idx) {
       unsigned char* test = new unsigned char[28 * 28];
       cudaMemcpy(test, d_mask_t.dptr_ + 28 * 28 * mask_idx,
@@ -362,7 +356,7 @@ void MRCNNMaskTargetRun<gpu>(const MRCNNMaskTargetParam& param, const std::vecto
       }
       std::cout << std::endl;
     }
-
+#endif
     // out: 2 * (B, N, C, MS, MS)
     const int total_num_of_masks = batch_size * num_of_rois * param.num_classes;
     write_masks_to_output_kernel<<<total_num_of_masks, 256, 0, stream>>>(d_mask_t.dptr_,
