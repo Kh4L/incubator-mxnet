@@ -165,18 +165,26 @@ __global__ void rasterize_kernel(const DType* matches,
 
   unsigned char* const mask_ptr = mask + roi_idx * h * w;
 
+  const DType *roi = roi_data + (roi_idx * 4);
+  const int roi_x_min = roi[0];
+  const int roi_y_min = roi[1];
+  const int roi_x_max = ceil(roi[2]);
+  const int roi_y_max = ceil(roi[3]);
+
+  const int roi_height = roi_y_max - roi_y_min;
+  const int roi_width = roi_x_max - roi_x_min;
+
   const int warp_id = tid / THREADS_PER_WARP;
   const int lane_id = tid % THREADS_PER_WARP;
   const double invalid_intersection = 2 * w;
-  const long aligned_h = ((h + NWARPS - 1) / NWARPS) * NWARPS;
+  const long aligned_h = ((roi_height + NWARPS - 1) / NWARPS) * NWARPS;
 
-  for (int current_y = warp_id;
-    current_y < h;
+
+  for (int current_y = warp_id + roi_y_min;
+    current_y < roi_y_max;
     current_y += NWARPS) {
-    if (current_y < h) {
-      for (int x = lane_id; x < w; x += THREADS_PER_WARP) {
-        mask_ptr[x + current_y * w] = 0;
-      }
+    for (int x = lane_id + roi_x_min; x < roi_x_max; x += THREADS_PER_WARP) {
+      mask_ptr[x + current_y * w] = 0;
     }
   }
   __syncthreads();
@@ -200,15 +208,15 @@ __global__ void rasterize_kernel(const DType* matches,
 
       __syncthreads();
 
-      for (int current_y = warp_id;
-          current_y < aligned_h;
-          current_y += NWARPS) {
+      for (int current_y = warp_id + roi_y_min;
+           current_y < roi_y_min + aligned_h;
+           current_y += NWARPS) {
         double my_y = current_y + 0.5;
         for (int edge = lane_id; edge < NEDGES; edge += THREADS_PER_WARP) {
           scratch.intersections[warp_id * NEDGES + edge] = invalid_intersection;
         }
         __syncthreads();
-        if (current_y < h) {
+        if (current_y < roi_y_max) {
           for (int edge = lane_id; edge < current_k; edge += THREADS_PER_WARP) {
             const int previous_edge = (edge - 1 + current_k) % current_k;
             const double2 vert1 = vertices[previous_edge];
@@ -257,8 +265,8 @@ __global__ void rasterize_kernel(const DType* matches,
 
         __syncthreads();
 
-        if (current_y < h) {
-          for (int x = lane_id; x < w; x += THREADS_PER_WARP) {
+        if (current_y < roi_y_max) {
+          for (int x = lane_id + roi_x_min; x < roi_x_max; x += THREADS_PER_WARP) {
             const double my_x = x + 0.5;
             const int place = binary_search(my_x, scratch.intersections + NEDGES * warp_id, NEDGES);
             mask_ptr[x + current_y * w] = (mask_ptr[x + current_y * w] + place) % 2;
