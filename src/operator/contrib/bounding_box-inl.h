@@ -195,27 +195,6 @@ struct center_to_corner {
   }
 };
 
-template<typename DType>
-MSHADOW_XINLINE DType BoxArea(const DType *box, int encode) {
-  DType a1 = box[0];
-  DType a2 = box[1];
-  DType a3 = box[2];
-  DType a4 = box[3];
-  DType width, height;
-  if (box_common_enum::kCorner == encode) {
-    width = a3 - a1;
-    height = a4 - a2;
-  } else {
-    width = a3;
-    height = a4;
-  }
-  if (width < 0 || height < 0) {
-    return DType(0);
-  } else {
-    return width * height;
-  }
-}
-
 /*!
  * \brief compute areas specialized for nms to reduce computation
  *
