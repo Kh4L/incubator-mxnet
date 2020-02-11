@@ -134,23 +134,77 @@ __global__ void DisableExtraIndicesKernel(float *sample_per_anc,
                                           const float *rand_pool,
                                           const int num_anchors,
                                           const int max_num_pos,
-                                          const int num_sample
-                                          /*const int seed*/) {
+                                          const int num_sample) {
   __shared__ int sdata[2];
 
   const int tid = threadIdx.x;
 
+  constexpr int NUM_THREADS = 1024;
+
+  __shared__ int scratch_mem1[NUM_THREADS];
+  __shared__ int scratch_mem2[NUM_THREADS];
+
+  __syncthreads();
+  int prev_num_pos = 0;
+  int prev_num_neg = 0;
+  const int aligned_num_anchors = align(num_anchors, NUM_THREADS);
+  for (int idx = tid; idx < aligned_num_anchors; idx += blockDim.x) {
+    const float sample = idx < num_anchors ? sample_per_anc[idx] : 0;
+    int sample_is_pos = sample > 0 ? 1 : 0;
+    int sample_is_neg = sample < 0 ? 1 : 0;
+    __syncthreads();
+
+    // double buffered sum scan
+    int* in = scratch_mem1;
+    int* out = scratch_mem2;
+
+    if (tid == 0)
+      in[0] = sample_is_pos + prev_num_pos;
+    else
+      in[tid] = sample_is_pos;
+    out[tid] = 0;
+    for (int offset = 1; offset <= NUM_THREADS / 2; offset *= 2) {
+      if (offset < tid) {
+        out[tid] = in[tid] + in[tid - offset];
+      } else {
+        out[tid] = in[tid];
+      }
+      int* tmp = in;
+      in = out;
+      out = tmp;
+      __syncthreads();
+    }
+
+    if (idx < num_anchors && sample_is_pos)
+      pos_samples_indices[in[tid]] = idx;
+    prev_num_pos = in[NUM_THREADS - 1];
+    __syncthreads();
+
+    if (tid == 0)
+      in[0] = sample_is_neg + prev_num_neg;
+    else
+      in[tid] = sample_is_neg;
+    out[tid] = 0;
+    for (int offset = 1; offset <= NUM_THREADS / 2; offset *= 2) {
+      if (offset < tid) {
+        out[tid] = in[tid] + in[tid - offset];
+      } else {
+        out[tid] = in[tid];
+      }
+      int* tmp = in;
+      in = out;
+      out = tmp;
+      __syncthreads();
+    }
+    if (idx < num_anchors && sample_is_neg)
+      neg_samples_indices[in[tid]] = idx;
+    prev_num_neg = in[NUM_THREADS - 1];
+    __syncthreads();
+  }
+
   // generating the indices to disable in tid 0 (choice)
   if (tid == 0) {
-    int num_pos = 0, num_neg = 0;
-    for (int idx = 0; idx < num_anchors; ++idx) {
-      const float sample = sample_per_anc[idx];
-      if (sample > 0) {
-        pos_samples_indices[num_pos++] = idx;
-      } else if (sample < 0) {
-        neg_samples_indices[num_neg++] = idx;
-      }
-    }
+    int num_pos = prev_num_pos, num_neg = prev_num_neg;
 
     int num_pos_to_disable = num_pos - max_num_pos;
     int num_neg_to_disable = num_neg - num_sample + min(num_pos, max_num_pos);
