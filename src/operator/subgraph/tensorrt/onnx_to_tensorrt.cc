@@ -77,8 +77,10 @@ std::tuple<unique_ptr<nvinfer1::ICudaEngine>,
   GOOGLE_PROTOBUF_VERIFY_VERSION;
 
   auto trt_logger = std::unique_ptr<TRT_Logger>(new TRT_Logger(verbosity));
-  auto trt_builder = nvinfer1::createInferBuilder(*trt_logger);
-  auto trt_network = trt_builder->createNetwork();
+  auto trt_builder = InferObject(nvinfer1::createInferBuilder(*trt_logger));
+  const auto explicitBatch = 1U << static_cast<uint32_t>(
+                             nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
+  auto trt_network = InferObject(trt_builder->createNetworkV2(explicitBatch));
   auto trt_parser  = InferObject(nvonnxparser::createParser(*trt_network, *trt_logger));
   ::ONNX_NAMESPACE::ModelProto parsed_model;
   // We check for a valid parse, but the main effect is the side effect
@@ -125,8 +127,6 @@ std::tuple<unique_ptr<nvinfer1::ICudaEngine>,
   trt_builder->setMaxWorkspaceSize(max_workspace_size);
   trt_builder->setDebugSync(debug_builder);
   auto trt_engine = InferObject(trt_builder->buildCudaEngine(*trt_network));
-  trt_builder->destroy();
-  trt_network->destroy();
   return std::make_tuple(std::move(trt_engine), std::move(trt_parser), std::move(trt_logger));
 }
 

@@ -1,0 +1,216 @@
+# syntax = docker/dockerfile:1.0-experimental
+
+# run `git submodule update --init --recursive` before building
+
+# https://ngc.nvidia.com/catalog/containers/nvidia:tensorrt
+ARG FROM_IMAGE_NAME=nvcr.io/nvidia/tensorrt:20.03-py3
+
+FROM scratch AS mxnet
+COPY .clang-tidy       .
+COPY .codecov.yml      .
+COPY .mxnet_root       .
+COPY CMakeLists.txt    .
+COPY CODEOWNERS        .
+COPY CONTRIBUTORS.md   .
+COPY DISCLAIMER-WIP    .
+COPY KEYS              .
+COPY LICENSE           .
+COPY MKLDNN_README.md  .
+COPY Makefile          .
+COPY NEWS.md           .
+COPY NOTICE            .
+COPY mkldnn.mk         .
+COPY readthedocs.yml   .
+COPY snap.python       .
+COPY snapcraft.yaml    .
+COPY 3rdparty/ 3rdparty/
+COPY R-package/ R-package/
+COPY amalgamation/ amalgamation/
+COPY benchmark/ benchmark/
+COPY ci/ ci/
+COPY cmake/ cmake/
+COPY contrib/ contrib/
+COPY cpp-package/ cpp-package/
+COPY docker/ docker/
+COPY docs/ docs/
+COPY example/ example/
+COPY include/ include/
+COPY julia/ julia/
+COPY make/ make/
+COPY matlab/ matlab/
+COPY perl-package/ perl-package/
+COPY plugin/ plugin/
+COPY python/ python/
+COPY scala-package/ scala-package/
+COPY setup-utils/ setup-utils/
+COPY src/ src/
+COPY tests/ tests/
+COPY tools/ tools/
+
+FROM ${FROM_IMAGE_NAME}
+
+ARG PYVER=3.6
+ENV ONNX_NAMESPACE onnx
+
+RUN PYSFX=`[ "$PYVER" != "2.7" ] && echo "$PYVER" | cut -c1-1 || echo ""` && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        libopenblas-dev \
+        liblapack-dev \
+        pkg-config \
+        libtiff5-dev \
+        libjpeg8-dev \
+        zlib1g-dev \
+        python$PYVER-dev \
+        autoconf \
+        automake \
+        libtool \
+        nasm \
+        python$PYVER-distutils \
+        zip \
+        unzip && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV PYTHONIOENCODING utf-8
+ENV LC_ALL C.UTF-8
+
+# Need a newer version of CMake for ONNX and onnx-tensorrt
+RUN cd /usr/local/src && \
+    wget https://cmake.org/files/v3.8/cmake-3.8.2.tar.gz && \
+    tar -xvf cmake-3.8.2.tar.gz && \
+    cd cmake-3.8.2 && \
+    ./bootstrap --parallel=$(nproc) && \
+    make -j$(nproc) install && \
+    cd .. && \
+    rm -rf cmake*
+
+# Make sure symlinks exist for either python 2 or 3
+RUN rm -f /usr/bin/python && ln -s /usr/bin/python$PYVER /usr/bin/python
+RUN MAJ=`echo "$PYVER" | cut -c1-1` && \
+    rm -f /usr/bin/python$MAJ && ln -s /usr/bin/python$PYVER /usr/bin/python$MAJ
+
+RUN curl -O https://bootstrap.pypa.io/get-pip.py && \
+    python get-pip.py && \
+    rm get-pip.py
+
+# Upstream has 'numpy>1.16.0' but we prefer to lock down the version.  As of 5/28/2019,
+# numpy 1.16.3 appears to be too advanced, producing 2 sockeye unit test failures:
+# 'ValueError: Object arrays cannot be loaded when allow_pickle=False'
+RUN pip install --no-cache-dir numpy==1.16.2
+RUN pip install --upgrade --no-cache-dir setuptools requests jupyterlab
+
+# The following are needed for Sockeye on python 3+ only.
+RUN [ "$PYVER" = "2.7" ] || pip install --no-cache-dir unidecode tqdm pyyaml
+
+RUN OPENCV_VERSION=3.1.0 && \
+    wget -q -O - https://github.com/Itseez/opencv/archive/${OPENCV_VERSION}.tar.gz | tar -xzf - && \
+    cd opencv-${OPENCV_VERSION} && \
+    cmake -DCMAKE_BUILD_TYPE=RELEASE -DCMAKE_INSTALL_PREFIX=/usr \
+          -DENABLE_PRECOMPILED_HEADERS=OFF \
+          -DWITH_CUDA=OFF -DWITH_1394=OFF \
+          -DBUILD_opencv_cudalegacy=OFF -DBUILD_opencv_stitching=OFF -DWITH_IPP=OFF . && \
+    make -j"$(nproc)" install && \
+    rm -rf opencv-${OPENCV_VERSION}
+
+# libjpeg-turbo
+RUN JPEG_TURBO_VERSION=1.5.2 && \
+    wget -q -O - https://github.com/libjpeg-turbo/libjpeg-turbo/archive/${JPEG_TURBO_VERSION}.tar.gz | tar -xzf - && \
+    cd libjpeg-turbo-${JPEG_TURBO_VERSION} && \
+    autoreconf -fiv && \
+    ./configure --enable-shared --prefix=/usr 2>&1 >/dev/null && \
+    make -j"$(nproc)" install 2>&1 >/dev/null && \
+    rm -rf libjpeg-turbo-${JPEG_TURBO_VERSION}
+
+# Install protoc 3.5 and build protobuf here (for onnx and onnx-tensorrt)
+RUN git clone --recursive -b 3.5.1.1 https://github.com/google/protobuf.git && \
+    cd protobuf && \
+    ./autogen.sh && \
+    ./configure && \
+    make -j$(nproc) install && \
+    rm -rf /protobuf && \
+    ldconfig
+
+WORKDIR /opt/mxnet
+COPY --from=mxnet . .
+
+ENV MXNET_HOME "/opt/mxnet"
+ENV MXNET_CUDNN_AUTOTUNE_DEFAULT 2
+ENV NCCL_DISABLE_CHECKS 1
+ENV MXNET_USE_OPERATOR_TUNING 0
+ENV MXNET_GPU_COPY_NTHREADS 1
+ENV MXNET_OPTIMIZER_AGGREGATION_SIZE 60
+
+RUN cp make/config.mk . && \
+   echo "USE_CUDA=1" >> config.mk && \
+   echo "USE_CUDNN=1" >> config.mk && \
+   echo "CUDA_ARCH :=" \
+        "-gencode arch=compute_52,code=sm_52" \
+        "-gencode arch=compute_60,code=sm_60" \
+        "-gencode arch=compute_61,code=sm_61" \
+        "-gencode arch=compute_70,code=sm_70" \
+        "-gencode arch=compute_75,code=sm_75" \
+        "-gencode arch=compute_75,code=compute_75" >> config.mk && \
+    echo "USE_CUDA_PATH=/usr/local/cuda" >> config.mk && \
+    echo "USE_LIBJPEG_TURBO=1" >> config.mk && \
+    echo "USE_LIBJPEG_TURBO_PATH=/usr" >> config.mk && \
+    echo "USE_NCCL=1" >> config.mk && \
+    echo "USE_TENSORRT=1" >> config.mk && \
+    echo "ONNX_NAMESPACE=$ONNX_NAMESPACE" >> config.mk && \
+    echo "USE_DIST_KVSTORE=1" >> config.mk && \
+    echo "USE_LAPACK_PATH=/usr/lib/x86_64-linux-gnu" >> config.mk && \
+    echo "USE_BLAS=openblas" >> config.mk && \
+    echo "USE_MKLDNN=0" >> config.mk
+
+ENV LD_LIBRARY_PATH $LD_LIBRARY_PATH:/usr/local/lib
+
+# Building ONNX, then onnx-tensorrt. Remove packaged libonnx_proto.a for TRT versions >= 7
+RUN export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64/stubs && \
+    ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1 && \
+    cd /opt/mxnet/3rdparty/onnx-tensorrt/third_party/onnx && \
+    mkdir -p build && \
+    cd build && \
+    cmake -DCMAKE_CXX_FLAGS=-I/usr/include/python${PYVER} -DBUILD_SHARED_LIBS=ON .. && \
+    make -j$(nproc) install && \
+    ldconfig && \
+    cd .. && \
+    mkdir /usr/include/x86_64-linux-gnu/onnx && \
+    cp build/onnx/onnx*pb.* /usr/include/x86_64-linux-gnu/onnx && \
+    cp build/libonnx.so /usr/local/lib && \
+    if [ "$TRT_VERSION" = "7.0.0.0" ] || [ "$TRT_VERSION" \> "7.0.0.0" ]; then rm -f /usr/lib/x86_64-linux-gnu/libonnx_proto.a; fi && \
+    ldconfig
+
+RUN export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64/stubs && \
+    ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1 && \
+    cd /opt/mxnet/3rdparty/onnx-tensorrt && \
+    mkdir -p build && \
+    cd build && \
+    cmake .. && \
+    make -j$(nproc) install && \
+    ldconfig
+
+
+RUN export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64/stubs && \
+    ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1 && \
+    make -j$(nproc) && \
+    cp lib/libmxnet.so /usr/local/lib && \
+    cp libsample_lib.so /usr/local/lib && \
+    ldconfig && \
+    make clean && \
+    cd python && \
+    pip install --no-cache-dir -e .
+
+# build the wheel
+RUN cd /opt/mxnet/python && \
+    export MXNET_LIBRARY_PATH=/usr/local/lib/libmxnet.so && \
+    python setup.py bdist_wheel
+
+# patch the wheel
+RUN cd /opt/mxnet/python/dist && \
+    WHEEL=$(ls *.whl) && \
+    TMPDIR=$(mktemp -d) && \
+    unzip -d ${TMPDIR} ${WHEEL} && \
+    cd ${TMPDIR} && \
+    mv *.data/data/mxnet/libmxnet.so mxnet && \
+    zip -r ${WHEEL} . && \
+    mv ${WHEEL} /opt/mxnet/python/dist
+
+# Wheel in /opt/mxnet/python/dist
