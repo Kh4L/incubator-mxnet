@@ -18,13 +18,16 @@
  */
 
 /*!
- * Copyright (c) 2018 by Contributors
+ * Copyright (c) 2020 by Contributors
  * \file tensorrt.cu
  * \brief TensorRT GPU operation registration
  * \author Marek Kolodziej, Clement Fuji Tsang
 */
 
 #if MXNET_USE_TENSORRT
+
+#include <string>
+#include <unordered_map>
 
 #include "./tensorrt-inl.h"
 
@@ -40,6 +43,15 @@ namespace op {
   } \
 } while (0)
 
+void FeedCalibrator(const std::vector<TBlob>& inputs, TRTEngineParam& param,
+                    cudaStream_t s) {
+  std::unordered_map<std::string, void*> input_ptr_map;
+  for (auto it : param.input_name_to_idx) {
+    input_ptr_map.emplace(it.first, inputs[it.second].dptr_);
+  }
+  param.calibrator->setBatch(input_ptr_map, s);
+}
+
 void TRTCompute(const OpStatePtr& state, const OpContext& ctx,
                 const std::vector<TBlob>& inputs,
                 const std::vector<OpReqType>& req,
@@ -47,7 +59,10 @@ void TRTCompute(const OpStatePtr& state, const OpContext& ctx,
   using namespace mshadow;
   using namespace mshadow::expr;
   cudaStream_t cuda_s = Stream<gpu>::GetStream(ctx.get_stream<gpu>());
-  const auto& param = state.get_state<TRTEngineParam>();
+  auto& param = state.get_state<TRTEngineParam>();
+  if (param.calibration_mode) {
+    FeedCalibrator(inputs, param, cuda_s);
+  }
   for (size_t i = 0; i < param.binding_order->size(); ++i) {
     auto& p = param.binding_order->at(i);
     if (p.second == true) {
@@ -57,6 +72,17 @@ void TRTCompute(const OpStatePtr& state, const OpContext& ctx,
     }
   }
   param.trt_executor->enqueueV2(param.bindings->data(), cuda_s, nullptr);
+
+  if (param.calibration_mode && param.calibrator->lastIter()) {
+    param.calibrator->waitAndSetDone();
+    // calibrator is fully calibrated, the calibration tables are ready
+    cudaStreamSynchronize(cuda_s);
+    // create the new engine
+    auto int8_engine = param.future_int8_engine.get();
+    LOG(INFO) << "[TensorRT op] Calibration done, setting inference engine to INT8.";
+    param.ResetEngine(std::move(int8_engine),
+                      /* calibration_mode=*/ false);
+  }
 }
 
 NNVM_REGISTER_OP(_TensorRT)
